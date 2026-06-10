@@ -1,0 +1,6 @@
+Flask
+Flask-SQLAlchemy
+PyJWT
+cryptography
+python-dotenv
+psycopg2-binary
