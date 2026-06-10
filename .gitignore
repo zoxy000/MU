@@ -1,0 +1,28 @@
+# Database connection string and environment secrets
+env
+.env
+.env.local
+.env.development
+.env.production
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database fallbacks
+*.db
+*.sqlite
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Editor/IDE configurations
+.vscode/
+.idea/
+
+# OS Specific files
+.DS_Store
+Thumbs.db
