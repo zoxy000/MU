@@ -45,3 +45,14 @@ class UploadHistory(db.Model):
     status = db.Column(db.String(50), default='Hoạt động')  # 'Hoạt động' or 'Đã xóa'
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
+
+class FileChunk(db.Model):
+    __tablename__ = 'file_chunks'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    upload_id = db.Column(db.String(100), nullable=False, index=True)
+    chunk_index = db.Column(db.Integer, nullable=False)
+    chunk_data = db.Column(db.LargeBinary, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+

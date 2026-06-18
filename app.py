@@ -5,7 +5,7 @@ import jwt
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, g
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from config import Config
-from models import db, User, FileModel, UploadHistory
+from models import db, User, FileModel, UploadHistory, FileChunk
 from werkzeug.utils import secure_filename
 
 # JWT Utility functions
@@ -212,11 +212,46 @@ def create_app() -> Flask:
         if ext not in allowed_extensions:
             return jsonify({'success': False, 'error': 'Unsupported file format!'}), 400
             
-        file_data = file.read()
-        file_size = len(file_data)
+        # Check for chunked upload parameters
+        upload_id = request.form.get('upload_id')
+        chunk_index = request.form.get('chunk_index')
+        total_chunks = request.form.get('total_chunks')
+
+        if upload_id and chunk_index is not None and total_chunks is not None:
+            chunk_index = int(chunk_index)
+            total_chunks = int(total_chunks)
+            chunk_data = file.read()
+            
+            # Save this chunk to DB
+            new_chunk = FileChunk(
+                upload_id=upload_id,
+                chunk_index=chunk_index,
+                chunk_data=chunk_data
+            )
+            db.session.add(new_chunk)
+            db.session.commit()
+            
+            # Count received chunks
+            received_chunks_count = FileChunk.query.filter_by(upload_id=upload_id).count()
+            if received_chunks_count < total_chunks:
+                return jsonify({'success': True, 'status': 'chunk_received', 'chunk_index': chunk_index})
+                
+            # Reassemble file from all chunks
+            all_chunks = FileChunk.query.filter_by(upload_id=upload_id).order_by(FileChunk.chunk_index.asc()).all()
+            if len(all_chunks) != total_chunks:
+                return jsonify({'success': False, 'error': 'Chunk upload discrepancy. Please try again.'}), 400
+                
+            file_data = b''.join([c.chunk_data for c in all_chunks])
+            file_size = len(file_data)
+        else:
+            file_data = file.read()
+            file_size = len(file_data)
         
         max_size = 32 * 1024 * 1024
         if file_size > max_size:
+            if upload_id:
+                FileChunk.query.filter_by(upload_id=upload_id).delete()
+                db.session.commit()
             return jsonify({'success': False, 'error': 'File size exceeds the 32MB limit!'}), 400
             
         # --- AES-256-GCM Encryption Layer ---
@@ -225,6 +260,9 @@ def create_app() -> Flask:
             iv = secrets.token_bytes(12)  # Secure random 12-byte initialization vector
             encrypted_data = aesgcm.encrypt(iv, file_data, None)
         except Exception as e:
+            if upload_id:
+                FileChunk.query.filter_by(upload_id=upload_id).delete()
+                db.session.commit()
             return jsonify({'success': False, 'error': 'Error encrypting file!'}), 500
         # -------------------------------------
 
@@ -248,8 +286,25 @@ def create_app() -> Flask:
             status='Active'
         )
         db.session.add(new_history)
+        
+        # Clean up chunk entries
+        if upload_id:
+            FileChunk.query.filter_by(upload_id=upload_id).delete()
+            
         db.session.commit()
         
+        return jsonify({'success': True})
+
+    @app.route('/upload/cleanup', methods=['POST'])
+    def upload_cleanup():
+        if g.user is None:
+            return jsonify({'success': False, 'error': 'Not authenticated!'}), 401
+            
+        upload_id = request.args.get('upload_id') or request.form.get('upload_id')
+        if upload_id:
+            FileChunk.query.filter_by(upload_id=upload_id).delete()
+            db.session.commit()
+            
         return jsonify({'success': True})
 
     @app.route('/download/<string:file_id>')

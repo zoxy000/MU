@@ -366,6 +366,7 @@
 
         let selectedFile = null;
         let uploadXhr = null;
+        let currentUploadId = null;
 
         // Helper to get cookies by name
         function getCookie(name) {
@@ -472,6 +473,15 @@
                 uploadXhr.abort();
                 uploadXhr = null;
             }
+            if (currentUploadId) {
+                fetch(`/upload/cleanup?upload_id=${currentUploadId}`, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-Token': getCookie('csrf_token')
+                    }
+                }).catch(err => console.error('Cleanup failed:', err));
+                currentUploadId = null;
+            }
             selectedFile = null;
             fileInfo.classList.add('hidden');
             fileInput.value = '';
@@ -485,66 +495,98 @@
             uploadBtn.disabled = true;
             cancelBtn.innerText = 'Stop';
 
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-
-            uploadXhr = new XMLHttpRequest();
-            uploadXhr.open('POST', '/upload', true);
-            uploadXhr.setRequestHeader('X-CSRF-Token', getCookie('csrf_token'));
-
-            // Track upload progress
+            const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunks
+            const totalSize = selectedFile.size;
+            const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
+            currentUploadId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
+            
+            let chunkIndex = 0;
             let startTime = Date.now();
-            uploadXhr.upload.addEventListener('progress', e => {
-                if (e.lengthComputable) {
-                    const percentComplete = Math.round((e.loaded / e.total) * 100);
-                    progressBar.style.width = percentComplete + '%';
-                    progressText.innerText = `Uploading ${percentComplete}%`;
 
-                    // Calculate speed
-                    const elapsedTime = (Date.now() - startTime) / 1000; // seconds
-                    if (elapsedTime > 0) {
-                        const speedBytes = e.loaded / elapsedTime;
-                        progressSpeed.innerText = formatBytes(speedBytes) + '/s';
-                    }
-                }
-            });
+            function uploadNextChunk() {
+                if (!selectedFile) return;
 
-            uploadXhr.onload = function() {
-                if (uploadXhr.status === 200) {
-                    try {
-                        const res = JSON.parse(uploadXhr.responseText);
-                        if (res.success) {
-                            showToast('File uploaded successfully!');
-                            // Refresh page after 1.2s to show updated files list
-                            setTimeout(() => {
-                                window.location.reload();
-                            }, 1200);
-                        } else {
-                            showToast(res.error || 'Failed to save file to system.', 'error');
-                            uploadBtn.disabled = false;
-                            cancelBtn.innerText = 'Cancel';
+                const start = chunkIndex * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, totalSize);
+                const chunk = selectedFile.slice(start, end);
+
+                const formData = new FormData();
+                formData.append('file', chunk, selectedFile.name);
+                formData.append('upload_id', currentUploadId);
+                formData.append('chunk_index', chunkIndex);
+                formData.append('total_chunks', totalChunks);
+
+                uploadXhr = new XMLHttpRequest();
+                uploadXhr.open('POST', '/upload', true);
+                uploadXhr.setRequestHeader('X-CSRF-Token', getCookie('csrf_token'));
+
+                // Track upload progress
+                uploadXhr.upload.addEventListener('progress', e => {
+                    if (e.lengthComputable) {
+                        const chunkLoaded = e.loaded;
+                        const totalLoaded = start + chunkLoaded;
+                        const percentComplete = Math.round((totalLoaded / totalSize) * 100);
+                        progressBar.style.width = percentComplete + '%';
+                        progressText.innerText = `Uploading ${percentComplete}%`;
+
+                        // Calculate speed
+                        const elapsedTime = (Date.now() - startTime) / 1000; // seconds
+                        if (elapsedTime > 0) {
+                            const speedBytes = totalLoaded / elapsedTime;
+                            progressSpeed.innerText = formatBytes(speedBytes) + '/s';
                         }
-                    } catch (e) {
-                        showToast('Invalid server response.', 'error');
-                        uploadBtn.disabled = false;
-                        cancelBtn.innerText = 'Cancel';
                     }
-                } else {
-                    showToast('Failed to connect to the server.', 'error');
-                    uploadBtn.disabled = false;
-                    cancelBtn.innerText = 'Cancel';
-                }
-                uploadXhr = null;
-            };
+                });
 
-            uploadXhr.onerror = function() {
-                showToast('Failed to upload file due to network error.', 'error');
+                uploadXhr.onload = function() {
+                    if (uploadXhr.status === 200) {
+                        try {
+                            const res = JSON.parse(uploadXhr.responseText);
+                            if (res.success) {
+                                if (res.status === 'chunk_received') {
+                                    // Move to next chunk
+                                    chunkIndex++;
+                                    uploadNextChunk();
+                                } else {
+                                    // Finished completely
+                                    currentUploadId = null;
+                                    showToast('File uploaded successfully!');
+                                    // Refresh page after 1.2s to show updated files list
+                                    setTimeout(() => {
+                                        window.location.reload();
+                                    }, 1200);
+                                }
+                            } else {
+                                showToast(res.error || 'Failed to save file to system.', 'error');
+                                resetUploadControls();
+                            }
+                        } catch (e) {
+                            showToast('Invalid server response.', 'error');
+                            resetUploadControls();
+                        }
+                    } else {
+                        showToast('Failed to connect to the server.', 'error');
+                        resetUploadControls();
+                    }
+                };
+
+                uploadXhr.onerror = function() {
+                    showToast('Failed to upload file due to network error.', 'error');
+                    resetUploadControls();
+                };
+
+                uploadXhr.send(formData);
+            }
+
+            function resetUploadControls() {
                 uploadBtn.disabled = false;
                 cancelBtn.innerText = 'Cancel';
                 uploadXhr = null;
-            };
+                currentUploadId = null;
+            }
 
-            uploadXhr.send(formData);
+            // Start uploading first chunk
+            uploadNextChunk();
         });
 
         // AJAX File Deletion
